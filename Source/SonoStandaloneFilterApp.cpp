@@ -124,6 +124,9 @@ public:
     bool doInitialConnect = false;
     bool doImmediateQuit = false;
     bool doHeadless = false;
+    bool doDirectPeerConnect = false;
+    String directPeerHost;
+    int directPeerPort = 0;
     String loadSetupFilename;
     String cmdlineArgUrl;
 
@@ -309,6 +312,9 @@ public:
         const String userNameSpec("-n|--username");
         const String userNameSpecDesc("-n|--username <username>");
 
+        const String directPeerSpec("-d|--direct-peer");
+        const String directPeerSpecDesc("-d|--direct-peer <address:udp-port>");
+
         const String headlessSpec("-q|--headless");
         const String headlessSpecDesc("-q|--headless");
 
@@ -331,6 +337,11 @@ public:
 
         app.addCommand ({ userNameSpec, userNameSpecDesc,
             TRANS("Specify the displayed username for yourself when connecting to a group"), {},
+            nullptr
+        });
+
+        app.addCommand ({ directPeerSpec, directPeerSpecDesc,
+            TRANS("Headless direct peer invite by IP and UDP port; group name and password are not used"), {},
             nullptr
         });
 
@@ -408,6 +419,28 @@ public:
             copyInfo = true;
         }
 
+        auto directPeer = arglist.removeValueForOption(directPeerSpec).trim();
+        if (directPeer.isNotEmpty()) {
+            const int separator = directPeer.lastIndexOfChar(':');
+            if (separator <= 0 || separator >= directPeer.length() - 1) {
+                std::cerr << "Error: --direct-peer requires an address and UDP port, for example 192.168.1.20:12000" << std::endl;
+                doImmediateQuit = true;
+            } else {
+                directPeerHost = directPeer.substring(0, separator).trim();
+                directPeerPort = directPeer.substring(separator + 1).getIntValue();
+                if (directPeerHost.isEmpty() || directPeerPort < 1 || directPeerPort > 65535) {
+                    std::cerr << "Error: invalid --direct-peer address or UDP port" << std::endl;
+                    doImmediateQuit = true;
+                } else if (doInitialConnect) {
+                    std::cerr << "Error: use either a group connection or --direct-peer, not both" << std::endl;
+                    doImmediateQuit = true;
+                } else {
+                    doDirectPeerConnect = true;
+                    doHeadless = true;
+                }
+            }
+        }
+
         auto setupfile = arglist.removeValueForOption(loadSetupSpec);
         if (setupfile.isNotEmpty()) {
             loadSetupFilename = setupfile;
@@ -418,7 +451,7 @@ public:
 
             doHeadless = true;
 
-            if (!doInitialConnect) {
+            if (!doInitialConnect && !doDirectPeerConnect) {
                 std::cout << TRANS("Error: you need to specify a group to connect to for headless operation right now... eventually there will be an OSC interface.") << std::endl;
                 doImmediateQuit = true;
             }
@@ -546,7 +579,19 @@ public:
                 }
 
 
-                if (doInitialConnect) {
+                if (doDirectPeerConnect) {
+                    auto& state = sonoproc->getValueTreeState();
+                    if (auto* sendMute = state.getParameter(SonobusAudioProcessor::paramMainSendMute))
+                        sendMute->setValueNotifyingHost(0.0f);
+                    if (auto* receiveMute = state.getParameter(SonobusAudioProcessor::paramMainRecvMute))
+                        receiveMute->setValueNotifyingHost(1.0f);
+
+                    std::cout << "DIRECT_LOCAL_UDP_PORT=" << sonoproc->getUdpLocalPort() << std::endl;
+                    std::cout << "DIRECT_TARGET=" << directPeerHost << ":" << directPeerPort << std::endl;
+                    const bool inviteQueued = sonoproc->connectRemotePeer(directPeerHost, directPeerPort, {}, {}, false);
+                    std::cout << "DIRECT_INVITE_QUEUED=" << (inviteQueued ? "true" : "false") << std::endl;
+                }
+                else if (doInitialConnect) {
                     DBG("CONNECTING HEADLESS INITIAL");
                     sonoproc->connectToServer(cmdlineConnInfo.serverHost, cmdlineConnInfo.serverPort, cmdlineConnInfo.userName, cmdlineConnInfo.userPassword);
 
