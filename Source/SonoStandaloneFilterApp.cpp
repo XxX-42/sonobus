@@ -1141,8 +1141,34 @@ public:
                         }
                         else
                         {
-                            peerIndex = findHeadlessPeerByAddress(processor, peerAddress);
-                            if (peerIndex < 0)
+                            if (query && peerAddress == "auto")
+                            {
+                                peerIndex = findHeadlessPeerByAddress(
+                                    processor, directPeerHost + ":" + String(directPeerPort));
+                                if (peerIndex >= 0 && !processor->getRemotePeerConnected(peerIndex))
+                                    peerIndex = -1;
+                                if (peerIndex < 0)
+                                {
+                                    for (int i = 0; i < processor->getNumberRemotePeers(); ++i)
+                                        if (processor->getRemotePeerConnected(i))
+                                        {
+                                            if (peerIndex >= 0) { peerIndex = -2; break; }
+                                            peerIndex = i;
+                                        }
+                                }
+                                if (peerIndex >= 0)
+                                {
+                                    String host;
+                                    int port = 0;
+                                    processor->getRemotePeerAddressInfo(peerIndex, host, port);
+                                    peerAddress = host + ":" + String(port);
+                                }
+                            }
+                            else
+                                peerIndex = findHeadlessPeerByAddress(processor, peerAddress);
+                            if (peerIndex == -2)
+                                error = "multiple_connected_peers";
+                            else if (peerIndex < 0)
                                 error = "peer_not_found";
                             else
                             {
