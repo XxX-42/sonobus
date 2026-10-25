@@ -1544,10 +1544,19 @@ public:
             {
                 if (outputDevice == nullptr)
                 {
-                    if (WaitForSingleObject (inputDevice->clientEvent, 1000) == WAIT_TIMEOUT)
-                        break;
+                    // A shared-mode capture event can contain more samples than one
+                    // callback block. Drain the reservoir before waiting for another
+                    // event, otherwise a small requested block size (e.g. 256 frames)
+                    // consumes only one block per device period and gradually falls
+                    // behind the capture clock.
+                    if (deviceMode != WASAPIDeviceMode::shared
+                        || inputDevice->getNumSamplesInReservoir() < bufferSize)
+                    {
+                        if (WaitForSingleObject (inputDevice->clientEvent, 1000) == WAIT_TIMEOUT)
+                            break;
 
-                    inputDevice->handleDeviceBuffer();
+                        inputDevice->handleDeviceBuffer();
+                    }
 
                     if (inputDevice->getNumSamplesInReservoir() < bufferSize)
                         continue;
