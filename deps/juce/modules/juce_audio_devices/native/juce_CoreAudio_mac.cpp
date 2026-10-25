@@ -654,13 +654,14 @@ public:
             return "Couldn't change buffer size";
         }
 
-        // Annoyingly, after changing the rate and buffer size, some devices fail to
-        // correctly report their new settings until some random time in the future, so
-        // after calling updateDetailsFromDevice, we need to manually bodge these values
-        // to make sure we're using the correct numbers..
+        // Some devices report a stale sample rate immediately after a change.
+        // Keep the buffer frame size read back from the device: a driver may
+        // clamp the requested size (for example, AirPods 128 -> 256 frames).
+        // Overwriting that value would render only part of each hardware buffer.
         updateDetailsFromDevice (ins, outs);
+        std::fprintf (stderr, "HAL_OPEN_READBACK device_id=%u requested_frames=%d readback_frames=%d readback_rate=%.1f\n",
+                      deviceID, bufferSizeSamples, bufferSize, sampleRate);
         sampleRate = newSampleRate;
-        bufferSize = bufferSizeSamples;
 
         if (sampleRates.size() == 0)
             return "Device has no available sample-rates";

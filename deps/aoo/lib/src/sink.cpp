@@ -773,7 +773,10 @@ void source_desc::do_update(const sink &s){
             infoqueue_.write(i);
             count++;
         };
-        LOG_VERBOSE("reset source queues to " << nbuffers << " buffers");
+        LOG_VERBOSE("AOO_RX_QUEUE_SETUP sink_id=" << s.id() << " source_id=" << id_
+                    << " channels=" << decoder_->nchannels() << " source_rate=" << decoder_->samplerate()
+                    << " source_block_frames=" << decoder_->blocksize() << " sink_rate=" << s.samplerate()
+                    << " sink_block_frames=" << s.blocksize() << " audio_queue_blocks=" << nbuffers);
     #if 0
         // don't touch the event queue once constructed
         eventqueue_.reset();
@@ -885,12 +888,25 @@ int32_t source_desc::handle_data(const sink& s, int32_t salt, const aoo::data_pa
     }
 
     // add data packet
-    if (!add_packet(d)){
+    if (!add_packet(s, d)){
         return 0;
     }
 
     // process blocks and send audio
     process_blocks();
+
+    // Report on the network thread, never from the realtime processing path.
+    const auto diagnosticNow = time_tag::now().to_uint64();
+    if (diagnosticNow - diagnostic_last_report_time_ >= (uint64_t(2) << 32)){
+        diagnostic_last_report_time_ = diagnosticNow;
+        LOG_VERBOSE("AOO_RX_FLOW sink_id=" << s.id() << " source_id=" << id_
+                    << " t_ntp=" << diagnosticNow << " sequence=" << d.sequence
+                    << " source_block_frames=" << decoder_->blocksize()
+                    << " source_rate=" << decoder_->samplerate() << " sink_rate=" << s.samplerate()
+                    << " processed_frames=" << diagnostic_processed_frames_.load(std::memory_order_relaxed)
+                    << " queued_blocks=" << blockqueue_.size()
+                    << " audio_queue_blocks=" << audioqueue_.read_available());
+    }
 
 #if 1
     check_outdated_blocks();
@@ -963,6 +979,8 @@ bool source_desc::process(const sink& s, aoo_sample *buffer, int32_t stride, int
     if (!decoder_){
         return false;
     }
+
+    diagnostic_processed_frames_.fetch_add(numsampleframes, std::memory_order_relaxed);
 
     // record stream state
     int32_t lost = streamstate_.get_lost();
@@ -1082,7 +1100,10 @@ bool source_desc::process(const sink& s, aoo_sample *buffer, int32_t stride, int
             e.source_state.state = AOO_SOURCE_STATE_STOP;
             push_event(e);
 
-            LOG_VERBOSE("UNDERRUN resampler avail " << resampler_.read_available() << "  readsamp: " << readsamples);
+            LOG_VERBOSE("AOO_RX_UNDERRUN sink_id=" << s.id() << " source_id=" << id_
+                        << " t_ntp=" << time_tag::now().to_uint64()
+                        << " processed_frames=" << diagnostic_processed_frames_.load(std::memory_order_relaxed)
+                        << " resampler_samples=" << resampler_.read_available() << " required_samples=" << readsamples);
 
             // this doesn't do anything if the stream simply stopped
             streamstate_.set_underrun();
@@ -1198,7 +1219,7 @@ bool source_desc::check_packet(const data_packet &d){
     return true;
 }
 
-bool source_desc::add_packet(const data_packet& d){
+bool source_desc::add_packet(const sink& s, const data_packet& d){
     auto block = blockqueue_.find(d.sequence);
     if (!block){
         if (blockqueue_.full()){
@@ -1208,6 +1229,7 @@ bool source_desc::add_packet(const data_packet& d){
             // first we check if the first (complete) block is about to be read next,
             // which means that we have a buffer overflow (the source is too fast)
             if (old == next_ && blockqueue_.front().complete()){
+                const auto queuedBeforeReset = blockqueue_.size();
                 // clear the block queue and fill audio buffer with zeros.
                 blockqueue_.clear();
                 ack_list_.clear();
@@ -1230,7 +1252,14 @@ bool source_desc::add_packet(const data_packet& d){
                 streamstate_.add_lost(blockqueue_.size());
                 // update 'next'!
                 next_ = d.sequence;
-                LOG_VERBOSE("dropped " << count << " blocks to handle buffer overrun");
+                LOG_VERBOSE("AOO_RX_OVERRUN sink_id=" << s.id() << " source_id=" << id_
+                            << " t_ntp=" << time_tag::now().to_uint64()
+                            << " sequence=" << d.sequence << " queued_blocks_discarded=" << queuedBeforeReset
+                            << " zero_fill_blocks=" << count << " channels=" << decoder_->nchannels()
+                            << " source_block_frames=" << decoder_->blocksize()
+                            << " source_rate=" << decoder_->samplerate() << " sink_rate=" << s.samplerate()
+                            << " processed_frames=" << diagnostic_processed_frames_.load(std::memory_order_relaxed)
+                            << " audio_queue_blocks=" << audioqueue_.read_available());
             } else {
                 if (audioqueue_.write_available() && infoqueue_.write_available()){
                     auto ptr = audioqueue_.write_data();

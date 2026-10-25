@@ -199,7 +199,7 @@ private:
     // handle messages
     bool check_packet(const data_packet& d);
 
-    bool add_packet(const data_packet& d);
+    bool add_packet(const sink& s, const data_packet& d);
 
     void process_blocks();
 
@@ -232,6 +232,8 @@ private:
     double samplerate_ = 0; // recent samplerate
     int32_t protocol_flags_ = 0; // protocol flags sent from the remote source
     stream_state streamstate_;
+    std::atomic<uint64_t> diagnostic_processed_frames_{0};
+    uint64_t diagnostic_last_report_time_ = 0;
     std::vector<char> userformat_;
     // queues and buffers
     block_queue blockqueue_;
