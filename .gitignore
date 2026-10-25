@@ -4,3 +4,8 @@ build32
 buildXcode
 release/1.*
 mobile/Builds
+
+.DS_Store
+/build-*/
+*.log
+/Source/*.before-*

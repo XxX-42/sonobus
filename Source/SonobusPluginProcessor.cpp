@@ -19,6 +19,7 @@
 #include "mtdm.h"
 
 #include <algorithm>
+#include <iostream>
 
 #include "LatencyMeasurer.h"
 #include "Metronome.h"
@@ -2642,6 +2643,7 @@ bool SonobusAudioProcessor::handleOtherMessage(EndpointState * endpoint, const c
                 }
 
                 handleRemotePeerInfoUpdate(peer, infodata);
+                std::cerr << "AOO_PEERINFO_RECEIVED_FROM=" << endpoint->ipaddr << ":" << endpoint->port << std::endl;
             }
 
         }
