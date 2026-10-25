@@ -1544,10 +1544,16 @@ public:
             {
                 if (outputDevice == nullptr)
                 {
-                    if (WaitForSingleObject (inputDevice->clientEvent, 1000) == WAIT_TIMEOUT)
-                        break;
+                    // In shared input-only mode, process a complete callback block already in the reservoir
+                    // before waiting for the next device event.
+                    if (deviceMode != WASAPIDeviceMode::shared
+                        || inputDevice->getNumSamplesInReservoir() < bufferSize)
+                    {
+                        if (WaitForSingleObject (inputDevice->clientEvent, 1000) == WAIT_TIMEOUT)
+                            break;
 
-                    inputDevice->handleDeviceBuffer();
+                        inputDevice->handleDeviceBuffer();
+                    }
 
                     if (inputDevice->getNumSamplesInReservoir() < bufferSize)
                         continue;
