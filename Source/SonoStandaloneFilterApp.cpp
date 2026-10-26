@@ -816,12 +816,15 @@ public:
         if (processor == nullptr)
             return;
         if (auto* parameter = processor->getValueTreeState().getParameter(SonobusAudioProcessor::paramMainRecvMute))
-            parameter->setValueNotifyingHost(normalizedValue);
+            if ((parameter->getValue() >= 0.5f) != (normalizedValue >= 0.5f))
+                parameter->setValueNotifyingHost(normalizedValue);
     }
 
     void rememberHeadlessReceiveMuteState(SonobusAudioProcessor* processor)
     {
-        if (processor == nullptr)
+        // Device reconfiguration briefly mutes reception before restoring it.
+        // That temporary value must not replace the last healthy route state.
+        if (processor == nullptr || processor->isMainReceiveUnmutePending())
             return;
 
         auto* parameter = processor->getValueTreeState().getParameter(SonobusAudioProcessor::paramMainRecvMute);
@@ -829,15 +832,6 @@ public:
             return;
 
         headlessReceiveMuteBeforeAirPodsBlock = parameter->getValue();
-        bool anyPeerReceiveAllowed = false;
-        for (int peerIndex = 0; peerIndex < processor->getNumberRemotePeers(); ++peerIndex)
-            anyPeerReceiveAllowed = anyPeerReceiveAllowed || processor->getRemotePeerRecvAllow(peerIndex);
-
-        // Peer allow reflects the effective receive state. Keep this snapshot
-        // fresh while the route is healthy so a device-removal notification
-        // cannot race ahead of the last unmuted state.
-        if (anyPeerReceiveAllowed)
-            headlessReceiveMuteBeforeAirPodsBlock = 0.0f;
     }
 
     void blockHeadlessOutputForMissingAirPods(SonobusAudioProcessor* processor, const String& reason)
@@ -871,9 +865,6 @@ public:
             return;
 
         auto& manager = pluginHolder->deviceManager;
-        if (!headlessAirPodsRouteBlocked)
-            rememberHeadlessReceiveMuteState(processor);
-
         const auto airPodsName = findAvailableAirPodsOutputName(manager);
         const auto preferenceFile = getHeadlessAirPodsPreferenceFile();
 
@@ -902,6 +893,9 @@ public:
         const bool alreadyUsingAirPods = currentDevice != nullptr
             && currentDevice->getName().containsIgnoreCase("AirPods")
             && setup.outputDeviceName == airPodsName;
+
+        if (!headlessAirPodsRouteBlocked && alreadyUsingAirPods)
+            rememberHeadlessReceiveMuteState(processor);
 
         if (!alreadyUsingAirPods)
         {
@@ -1466,6 +1460,8 @@ public:
                     root->setProperty("local_udp_port", proc->getUdpLocalPort());
                     root->setProperty("airpods_output_preferred", headlessAirPodsOutputPreferred);
                     root->setProperty("airpods_output_blocked", headlessAirPodsRouteBlocked);
+                    root->setProperty("receive_muted", proc->getValueTreeState().getRawParameterValue(SonobusAudioProcessor::paramMainRecvMute)->load() >= 0.5f);
+                    root->setProperty("receive_unmute_pending", proc->isMainReceiveUnmutePending());
                     AudioDeviceManager::AudioDeviceSetup devSetup;
                     pluginHolder->deviceManager.getAudioDeviceSetup(devSetup);
                     root->setProperty("input_device", devSetup.inputDeviceName);
@@ -1539,6 +1535,8 @@ public:
                               << " allow=" << proc->getRemotePeerRecvAllow(i)
                               << " active=" << proc->getRemotePeerRecvActive(i)
                               << " airpods_route_blocked=" << (headlessAirPodsRouteBlocked ? 1 : 0)
+                              << " receive_mute=" << proc->getValueTreeState().getRawParameterValue(SonobusAudioProcessor::paramMainRecvMute)->load()
+                              << " receive_unmute_pending=" << (proc->isMainReceiveUnmutePending() ? 1 : 0)
                               << " safety_mute=" << proc->getRemotePeerSafetyMuted(i)
                               << " channels=" << proc->getRemotePeerRecvChannelCount(i)
                               << " bytes=" << proc->getRemotePeerBytesReceived(i);

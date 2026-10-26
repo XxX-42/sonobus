@@ -433,6 +433,8 @@ public:
     void setRemotePeerRecvAllow(int index, bool allow, bool cached=false);
     bool getRemotePeerRecvAllow(int index, bool cached=false) const;
 
+    bool isMainReceiveUnmutePending() const { return mPendingUnmute.get(); }
+
     void setRemotePeerSoloed(int index, bool soloed);
     bool getRemotePeerSoloed(int index) const;
 
