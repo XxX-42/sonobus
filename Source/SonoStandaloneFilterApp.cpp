@@ -916,9 +916,15 @@ public:
         if (headlessAirPodsRouteBlocked)
         {
             setHeadlessReceiveMute(processor, headlessReceiveMuteBeforeAirPodsBlock);
+            // A long device outage may leave the Direct peer disconnected even
+            // after the global mute is restored. Repeat the configured invite
+            // so the existing endpoint can resume reception without a restart.
+            const bool inviteQueued = doDirectPeerConnect && headlessReceiveMuteBeforeAirPodsBlock < 0.5f
+                && processor->connectRemotePeer(directPeerHost, directPeerPort, {}, {}, false);
             headlessAirPodsRouteBlocked = false;
             std::cout << "AIRPODS_OUTPUT_RECOVERED device=" << manager.getCurrentAudioDevice()->getName().toStdString()
-                      << " receive_mute_restored=" << headlessReceiveMuteBeforeAirPodsBlock << std::endl;
+                      << " receive_mute_restored=" << headlessReceiveMuteBeforeAirPodsBlock
+                      << " direct_invite_queued=" << (inviteQueued ? 1 : 0) << std::endl;
         }
     }
 
