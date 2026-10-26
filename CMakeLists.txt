@@ -207,7 +207,9 @@ function(sono_add_custom_plugin_target target_name product_name formats is_instr
     if (APPLE)
         list (APPEND HEADER_INCLUDES deps/mac/include)
         list (APPEND LIB_PATHS ${CMAKE_CURRENT_SOURCE_DIR}/deps/mac/lib)
-        list (APPEND PlatSourceFiles  Source/CrossPlatformUtilsMac.mm)
+        list (APPEND PlatSourceFiles  Source/CrossPlatformUtilsMac.mm
+              Source/HeadlessOutputRouteMonitor.cpp
+              Source/HeadlessOutputRouteMonitor.h)
     elseif (WIN32)
         list (APPEND HEADER_INCLUDES deps/windows ../asiosdk/common)
         list (APPEND PlatSourceFiles  Source/CrossPlatformUtilsWindows.cpp)

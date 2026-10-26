@@ -46,7 +46,9 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 #include <juce_audio_utils/juce_audio_utils.h>
 
+#include <atomic>
 #include <cmath>
+#include <memory>
 
 
 // You can set this flag in your build if you need to specify a different
@@ -61,6 +63,10 @@ extern juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter();
 
 #include "SonobusPluginEditor.h"
 
+#if JUCE_MAC
+#include "HeadlessOutputRouteMonitor.h"
+#endif
+
 #if JUCE_ANDROID
 #include "android/SonoBusActivity.h"
 
@@ -74,7 +80,7 @@ namespace juce
 {
 
 //==============================================================================
-class SonobusStandaloneFilterApp  : public JUCEApplication, public Timer
+class SonobusStandaloneFilterApp  : public JUCEApplication, public Timer, public ChangeListener
 {
 public:
     SonobusStandaloneFilterApp()
@@ -110,6 +116,10 @@ public:
 
     ~SonobusStandaloneFilterApp()
     {
+#if JUCE_MAC
+        routeCallbackLifetime->store(false);
+        headlessOutputRouteMonitor.reset();
+#endif
 #if JUCE_ANDROID && JUCE_OPENGL
         detachGL();
 #endif
@@ -552,7 +562,11 @@ public:
         else {
             // headless mode
 
+#if JUCE_MAC
+            loadHeadlessAirPodsPreference();
+#endif
             pluginHolder.reset (createHeadlessPlugin());
+            pluginHolder->deviceManager.addChangeListener(this);
 
             if (auto * sonoproc = dynamic_cast<SonobusAudioProcessor*>(pluginHolder->processor.get())) {
 
@@ -582,19 +596,43 @@ public:
                     }
                 }
 
+#if JUCE_MAC
+                enforceHeadlessAirPodsOutputRoute(sonoproc);
+                startTimer(500);
+
+                const std::weak_ptr<std::atomic<bool>> lifetime = routeCallbackLifetime;
+                headlessOutputRouteMonitor = std::make_unique<HeadlessOutputRouteMonitor>([this, lifetime]
+                {
+                    const auto alive = lifetime.lock();
+                    if (alive == nullptr || !alive->load())
+                        return;
+                    MessageManager::callAsync([this, lifetime]
+                    {
+                        const auto stillAlive = lifetime.lock();
+                        if (stillAlive == nullptr || !stillAlive->load() || !doHeadless || pluginHolder == nullptr)
+                            return;
+                        if (auto* processor = dynamic_cast<SonobusAudioProcessor*>(pluginHolder->processor.get()))
+                            enforceHeadlessAirPodsOutputRoute(processor);
+                    });
+                });
+#endif
+
 
                 if (doDirectPeerConnect) {
                     auto& state = sonoproc->getValueTreeState();
                     if (auto* sendMute = state.getParameter(SonobusAudioProcessor::paramMainSendMute))
                         sendMute->setValueNotifyingHost(1.0f);
                     if (auto* receiveMute = state.getParameter(SonobusAudioProcessor::paramMainRecvMute))
+#if JUCE_MAC
+                        receiveMute->setValueNotifyingHost(headlessAirPodsRouteBlocked ? 1.0f : 0.0f);
+#else
                         receiveMute->setValueNotifyingHost(0.0f);
+#endif
 
                     std::cout << "DIRECT_LOCAL_UDP_PORT=" << sonoproc->getUdpLocalPort() << std::endl;
                     std::cout << "DIRECT_TARGET=" << directPeerHost << ":" << directPeerPort << std::endl;
                     const bool inviteQueued = sonoproc->connectRemotePeer(directPeerHost, directPeerPort, {}, {}, false);
                     std::cout << "DIRECT_INVITE_QUEUED=" << (inviteQueued ? "true" : "false") << std::endl;
-                    startTimer(1000);
                 }
                 else if (doInitialConnect) {
                     DBG("CONNECTING HEADLESS INITIAL");
@@ -736,6 +774,139 @@ public:
             .getChildFile("Application Support")
             .getChildFile("SonoBusHeadless");
     }
+
+#if JUCE_MAC
+    static File getHeadlessAirPodsPreferenceFile()
+    {
+        return getHeadlessControlDirectory().getChildFile("airpods-output-preference");
+    }
+
+    void loadHeadlessAirPodsPreference()
+    {
+        const auto preference = getHeadlessAirPodsPreferenceFile();
+        headlessAirPodsOutputPreferred = !preference.existsAsFile()
+            || preference.loadFileAsString().trim() != "airpods-disabled";
+
+        if (headlessAirPodsOutputPreferred && !preference.existsAsFile())
+        {
+            preference.getParentDirectory().createDirectory();
+            if (preference.replaceWithText("airpods-required\n"))
+                std::cout << "AIRPODS_OUTPUT_PREFERENCE_PERSISTED policy=required" << std::endl;
+            else
+                std::cerr << "AIRPODS_OUTPUT_PREFERENCE_PERSIST_FAILED policy=required" << std::endl;
+        }
+    }
+
+    String findAvailableAirPodsOutputName(AudioDeviceManager& manager)
+    {
+        for (auto* type : manager.getAvailableDeviceTypes())
+        {
+            if (type == nullptr || !type->getTypeName().equalsIgnoreCase("CoreAudio"))
+                continue;
+
+            for (const auto& name : type->getDeviceNames(false))
+                if (name.containsIgnoreCase("AirPods"))
+                    return name;
+        }
+        return {};
+    }
+
+    void setHeadlessReceiveMute(SonobusAudioProcessor* processor, float normalizedValue)
+    {
+        if (processor == nullptr)
+            return;
+        if (auto* parameter = processor->getValueTreeState().getParameter(SonobusAudioProcessor::paramMainRecvMute))
+            parameter->setValueNotifyingHost(normalizedValue);
+    }
+
+    void blockHeadlessOutputForMissingAirPods(SonobusAudioProcessor* processor, const String& reason)
+    {
+        auto* currentDevice = pluginHolder != nullptr
+            ? pluginHolder->deviceManager.getCurrentAudioDevice()
+            : nullptr;
+        const bool needsLog = !headlessAirPodsRouteBlocked || currentDevice != nullptr;
+
+        if (!headlessAirPodsRouteBlocked)
+        {
+            if (processor != nullptr)
+                if (auto* parameter = processor->getValueTreeState().getParameter(SonobusAudioProcessor::paramMainRecvMute))
+                    headlessReceiveMuteBeforeAirPodsBlock = parameter->getValue();
+
+            headlessAirPodsRouteBlocked = true;
+        }
+
+        // Keep this enforced after setup-state loads and across device-list churn.
+        setHeadlessReceiveMute(processor, 1.0f);
+
+        if (currentDevice != nullptr)
+            pluginHolder->deviceManager.closeAudioDevice();
+
+        if (needsLog)
+            std::cout << "AIRPODS_OUTPUT_BLOCKED reason=" << reason.toStdString()
+                      << " receive_muted=1 audio_device_closed=1" << std::endl;
+    }
+
+    void enforceHeadlessAirPodsOutputRoute(SonobusAudioProcessor* processor)
+    {
+        if (!doHeadless || pluginHolder == nullptr)
+            return;
+
+        auto& manager = pluginHolder->deviceManager;
+        const auto airPodsName = findAvailableAirPodsOutputName(manager);
+        const auto preferenceFile = getHeadlessAirPodsPreferenceFile();
+
+        if (airPodsName.isEmpty())
+        {
+            if (headlessAirPodsOutputPreferred)
+                blockHeadlessOutputForMissingAirPods(processor, "preferred_device_unavailable");
+            return;
+        }
+
+        if (!headlessAirPodsOutputPreferred)
+        {
+            preferenceFile.getParentDirectory().createDirectory();
+            if (!preferenceFile.replaceWithText("airpods-required\n"))
+            {
+                blockHeadlessOutputForMissingAirPods(processor, "could_not_persist_airpods_preference");
+                return;
+            }
+            headlessAirPodsOutputPreferred = true;
+            std::cout << "AIRPODS_OUTPUT_PREFERENCE_PERSISTED device=" << airPodsName.toStdString() << std::endl;
+        }
+
+        AudioDeviceManager::AudioDeviceSetup setup;
+        manager.getAudioDeviceSetup(setup);
+        const auto* currentDevice = manager.getCurrentAudioDevice();
+        const bool alreadyUsingAirPods = currentDevice != nullptr
+            && currentDevice->getName().containsIgnoreCase("AirPods")
+            && setup.outputDeviceName == airPodsName;
+
+        if (!alreadyUsingAirPods)
+        {
+            setup.outputDeviceName = airPodsName;
+            setup.useDefaultOutputChannels = true;
+            const auto error = manager.setAudioDeviceSetup(setup, false);
+            if (error.isNotEmpty() || manager.getCurrentAudioDevice() == nullptr
+                || !manager.getCurrentAudioDevice()->getName().containsIgnoreCase("AirPods"))
+            {
+                blockHeadlessOutputForMissingAirPods(processor,
+                    error.isNotEmpty() ? error : "AirPods_output_open_failed");
+                return;
+            }
+            std::cout << "AIRPODS_OUTPUT_ROUTE_APPLIED requested=" << airPodsName.toStdString()
+                      << " active=" << manager.getCurrentAudioDevice()->getName().toStdString() << std::endl;
+        }
+
+        if (headlessAirPodsRouteBlocked)
+        {
+            setHeadlessReceiveMute(processor, headlessReceiveMuteBeforeAirPodsBlock);
+            headlessAirPodsRouteBlocked = false;
+            std::cout << "AIRPODS_OUTPUT_RECOVERED device=" << manager.getCurrentAudioDevice()->getName().toStdString()
+                      << " receive_mute_restored=" << headlessReceiveMuteBeforeAirPodsBlock << std::endl;
+        }
+    }
+
+#endif
 
     static bool getFiniteNumber(const var& value, double& result)
     {
@@ -1215,8 +1386,25 @@ public:
     }
 
 
+    void changeListenerCallback(ChangeBroadcaster* source) override
+    {
+#if JUCE_MAC
+        if (!doHeadless || pluginHolder == nullptr || source != &pluginHolder->deviceManager)
+            return;
+        if (auto* processor = dynamic_cast<SonobusAudioProcessor*>(pluginHolder->processor.get()))
+            enforceHeadlessAirPodsOutputRoute(processor);
+#else
+        ignoreUnused(source);
+#endif
+    }
+
     void timerCallback() override
     {
+#if JUCE_MAC
+        if (doHeadless && pluginHolder != nullptr)
+            if (auto* processor = dynamic_cast<SonobusAudioProcessor*>(pluginHolder->processor.get()))
+                enforceHeadlessAirPodsOutputRoute(processor);
+#endif
         if (doHeadless && doDirectPeerConnect && pluginHolder != nullptr) {
             if (auto* proc = dynamic_cast<SonobusAudioProcessor*>(pluginHolder->processor.get())) {
                 const File controlDirectory = getHeadlessControlDirectory();
@@ -1254,6 +1442,8 @@ public:
                     root->setProperty("headless", true);
                     root->setProperty("direct_target", directPeerHost + ":" + String(directPeerPort));
                     root->setProperty("local_udp_port", proc->getUdpLocalPort());
+                    root->setProperty("airpods_output_preferred", headlessAirPodsOutputPreferred);
+                    root->setProperty("airpods_output_blocked", headlessAirPodsRouteBlocked);
                     AudioDeviceManager::AudioDeviceSetup devSetup;
                     pluginHolder->deviceManager.getAudioDeviceSetup(devSetup);
                     root->setProperty("input_device", devSetup.inputDeviceName);
@@ -1326,6 +1516,7 @@ public:
                               << " peer=" << i
                               << " allow=" << proc->getRemotePeerRecvAllow(i)
                               << " active=" << proc->getRemotePeerRecvActive(i)
+                              << " airpods_route_blocked=" << (headlessAirPodsRouteBlocked ? 1 : 0)
                               << " safety_mute=" << proc->getRemotePeerSafetyMuted(i)
                               << " channels=" << proc->getRemotePeerRecvChannelCount(i)
                               << " bytes=" << proc->getRemotePeerBytesReceived(i);
@@ -1353,6 +1544,10 @@ public:
 
     void shutdown() override
     {
+#if JUCE_MAC
+        routeCallbackLifetime->store(false);
+        headlessOutputRouteMonitor.reset();
+#endif
         //DBG("shutdown");
         if (mainWindow.get() != nullptr) {
             mainWindow->pluginHolder->savePluginState();
@@ -1560,6 +1755,13 @@ protected:
 
     // used only in headless mode
     std::unique_ptr<StandalonePluginHolder> pluginHolder;
+#if JUCE_MAC
+    std::shared_ptr<std::atomic<bool>> routeCallbackLifetime = std::make_shared<std::atomic<bool>>(true);
+    std::unique_ptr<HeadlessOutputRouteMonitor> headlessOutputRouteMonitor;
+#endif
+    bool headlessAirPodsOutputPreferred = false;
+    bool headlessAirPodsRouteBlocked = false;
+    float headlessReceiveMuteBeforeAirPodsBlock = 0.0f;
 
 };
 

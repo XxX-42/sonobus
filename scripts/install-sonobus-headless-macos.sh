@@ -28,6 +28,15 @@ LOG_DIR="$SETUP_DIR/Logs"
 ENTITLEMENTS="$ROOT_DIR/scripts/SonoBusHeadless-macos.entitlements"
 CM="${SONOBUS_CMAKE:-}"
 
+EXISTING_DIRECT_PEER=""
+if [[ -f "$AGENT_FILE" ]]; then
+    EXISTING_DIRECT_PEER="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:3' "$AGENT_FILE" 2>/dev/null || true)"
+fi
+DIRECT_PEER="${SONOBUS_DIRECT_PEER:-$EXISTING_DIRECT_PEER}"
+if [[ -z "$DIRECT_PEER" ]]; then
+    DIRECT_PEER="192.168.1.4:51440"
+fi
+
 case "$MODE" in
     stage|prepare|deploy) ;;
     *) echo "Usage: $0 [stage|prepare|deploy]" >&2; exit 2 ;;
@@ -164,7 +173,7 @@ plutil -create xml1 "$AGENT_TMP"
 /usr/libexec/PlistBuddy -c "Add :ProgramArguments:0 string $APP_EXECUTABLE" "$AGENT_TMP"
 /usr/libexec/PlistBuddy -c 'Add :ProgramArguments:1 string -q' "$AGENT_TMP"
 /usr/libexec/PlistBuddy -c 'Add :ProgramArguments:2 string -d' "$AGENT_TMP"
-/usr/libexec/PlistBuddy -c 'Add :ProgramArguments:3 string 192.168.1.4:51440' "$AGENT_TMP"
+/usr/libexec/PlistBuddy -c "Add :ProgramArguments:3 string $DIRECT_PEER" "$AGENT_TMP"
 /usr/libexec/PlistBuddy -c 'Add :ProgramArguments:4 string -l' "$AGENT_TMP"
 /usr/libexec/PlistBuddy -c "Add :ProgramArguments:5 string $SETUP_FILE" "$AGENT_TMP"
 /usr/libexec/PlistBuddy -c 'Add :AssociatedBundleIdentifiers array' "$AGENT_TMP"
