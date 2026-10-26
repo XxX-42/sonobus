@@ -819,6 +819,27 @@ public:
             parameter->setValueNotifyingHost(normalizedValue);
     }
 
+    void rememberHeadlessReceiveMuteState(SonobusAudioProcessor* processor)
+    {
+        if (processor == nullptr)
+            return;
+
+        auto* parameter = processor->getValueTreeState().getParameter(SonobusAudioProcessor::paramMainRecvMute);
+        if (parameter == nullptr)
+            return;
+
+        headlessReceiveMuteBeforeAirPodsBlock = parameter->getValue();
+        bool anyPeerReceiveAllowed = false;
+        for (int peerIndex = 0; peerIndex < processor->getNumberRemotePeers(); ++peerIndex)
+            anyPeerReceiveAllowed = anyPeerReceiveAllowed || processor->getRemotePeerRecvAllow(peerIndex);
+
+        // Peer allow reflects the effective receive state. Keep this snapshot
+        // fresh while the route is healthy so a device-removal notification
+        // cannot race ahead of the last unmuted state.
+        if (anyPeerReceiveAllowed)
+            headlessReceiveMuteBeforeAirPodsBlock = 0.0f;
+    }
+
     void blockHeadlessOutputForMissingAirPods(SonobusAudioProcessor* processor, const String& reason)
     {
         auto* currentDevice = pluginHolder != nullptr
@@ -828,10 +849,8 @@ public:
 
         if (!headlessAirPodsRouteBlocked)
         {
-            if (processor != nullptr)
-                if (auto* parameter = processor->getValueTreeState().getParameter(SonobusAudioProcessor::paramMainRecvMute))
-                    headlessReceiveMuteBeforeAirPodsBlock = parameter->getValue();
-
+            std::cout << "AIRPODS_OUTPUT_MUTE_SNAPSHOT restore="
+                      << headlessReceiveMuteBeforeAirPodsBlock << std::endl;
             headlessAirPodsRouteBlocked = true;
         }
 
@@ -852,6 +871,9 @@ public:
             return;
 
         auto& manager = pluginHolder->deviceManager;
+        if (!headlessAirPodsRouteBlocked)
+            rememberHeadlessReceiveMuteState(processor);
+
         const auto airPodsName = findAvailableAirPodsOutputName(manager);
         const auto preferenceFile = getHeadlessAirPodsPreferenceFile();
 
