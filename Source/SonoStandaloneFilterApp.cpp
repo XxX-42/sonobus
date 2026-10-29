@@ -870,6 +870,44 @@ public:
 
         if (airPodsName.isEmpty())
         {
+            const auto lease = getHeadlessControlDirectory().getChildFile("bach-speaker-playback-lease");
+            const auto age = Time::currentTimeMillis() - lease.getLastModificationTime().toMilliseconds();
+            const auto requestedName = lease.loadFileAsString().trim();
+            bool available = false;
+            if (lease.existsAsFile() && age >= 0 && age < 5000
+                && requestedName.containsIgnoreCase("MacBook")
+                && (requestedName.containsIgnoreCase("speaker") || requestedName.contains("扬声器")))
+                for (auto* type : manager.getAvailableDeviceTypes())
+                    if (type != nullptr && type->getTypeName().equalsIgnoreCase("CoreAudio")
+                        && type->getDeviceNames(false).contains(requestedName))
+                        available = true;
+            if (available)
+            {
+                AudioDeviceManager::AudioDeviceSetup setup;
+                manager.getAudioDeviceSetup(setup);
+                const auto* current = manager.getCurrentAudioDevice();
+                if (current == nullptr || current->getName() != requestedName)
+                {
+                    setup.outputDeviceName = requestedName;
+                    setup.useDefaultOutputChannels = true;
+                    const auto error = manager.setAudioDeviceSetup(setup, false);
+                    if (error.isNotEmpty() || manager.getCurrentAudioDevice() == nullptr)
+                    {
+                        blockHeadlessOutputForMissingAirPods(processor, "speaker_output_open_failed");
+                        return;
+                    }
+                }
+                if (headlessAirPodsRouteBlocked)
+                {
+                    setHeadlessReceiveMute(processor, headlessReceiveMuteBeforeAirPodsBlock);
+                    const bool inviteQueued = doDirectPeerConnect && headlessReceiveMuteBeforeAirPodsBlock < 0.5f
+                        && processor->connectRemotePeer(directPeerHost, directPeerPort, {}, {}, false);
+                    headlessAirPodsRouteBlocked = false;
+                    std::cout << "BACH_SPEAKER_LEASE_ACTIVE device=" << requestedName.toStdString()
+                              << " direct_invite_queued=" << (inviteQueued ? 1 : 0) << std::endl;
+                }
+                return;
+            }
             if (headlessAirPodsOutputPreferred)
                 blockHeadlessOutputForMissingAirPods(processor, "preferred_device_unavailable");
             return;
