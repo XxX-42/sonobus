@@ -875,8 +875,9 @@ public:
             const auto requestedName = lease.loadFileAsString().trim();
             bool available = false;
             if (lease.existsAsFile() && age >= 0 && age < 5000
-                && requestedName.containsIgnoreCase("MacBook")
-                && (requestedName.containsIgnoreCase("speaker") || requestedName.contains("扬声器")))
+                && ((requestedName.containsIgnoreCase("MacBook")
+                     && (requestedName.containsIgnoreCase("speaker") || requestedName.contains("扬声器")))
+                    || requestedName.containsIgnoreCase("headphone") || requestedName.contains("外置耳机")))
                 for (auto* type : manager.getAvailableDeviceTypes())
                     if (type != nullptr && type->getTypeName().equalsIgnoreCase("CoreAudio")
                         && type->getDeviceNames(false).contains(requestedName))
